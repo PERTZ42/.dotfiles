@@ -21,55 +21,127 @@ _comp_options+=(globdots)
 
 
 # User configuration
-
 ####################################################################################################################################################
+# =============================================================================
+#
+# Utility functions for zoxide.
+#
 
-_z_cd() {
-    cd "$@" || return "$?"
-
-    if [ "$_ZO_ECHO" = "1" ]; then
-        echo "$PWD"
-    fi
+# pwd based on the value of _ZO_RESOLVE_SYMLINKS.
+function __zoxide_pwd() {
+    \builtin pwd -L
 }
 
-z() {
-    if [ "$#" -eq 0 ]; then
-        _z_cd ~
-    elif [ "$#" -eq 1 ] && [ "$1" = '-' ]; then
-        if [ -n "$OLDPWD" ]; then
-            _z_cd "$OLDPWD"
-        else
-            echo 'zoxide: $OLDPWD is not set'
-            return 1
-        fi
+# cd + custom logic based on the value of _ZO_ECHO.
+function __zoxide_cd() {
+    # shellcheck disable=SC2164
+    \builtin cd -- "$@"
+}
+
+# =============================================================================
+#
+# Hook configuration for zoxide.
+#
+
+# Hook to add new entries to the database.
+function __zoxide_hook() {
+    # shellcheck disable=SC2312
+    \command zoxide add -- "$(__zoxide_pwd)"
+}
+
+# Initialize hook.
+# shellcheck disable=SC2154
+if [[ ${precmd_functions[(Ie)__zoxide_hook]:-} -eq 0 ]] && [[ ${chpwd_functions[(Ie)__zoxide_hook]:-} -eq 0 ]]; then
+    chpwd_functions+=(__zoxide_hook)
+fi
+
+# =============================================================================
+#
+# When using zoxide with --no-cmd, alias these internal functions as desired.
+#
+
+# Jump to a directory using only keywords.
+function __zoxide_z() {
+    # shellcheck disable=SC2199
+    if [[ "$#" -eq 0 ]]; then
+        __zoxide_cd ~
+    elif [[ "$#" -eq 1 ]] && { [[ -d "$1" ]] || [[ "$1" = '-' ]] || [[ "$1" =~ ^[-+][0-9]$ ]]; }; then
+        __zoxide_cd "$1"
     else
-        _zoxide_result="$(zoxide query -- "$@")" && _z_cd "$_zoxide_result"
+        \builtin local result
+        # shellcheck disable=SC2312
+        result="$(\command zoxide query --exclude "$(__zoxide_pwd)" -- "$@")" && __zoxide_cd "${result}"
     fi
 }
 
-zi() {
-    _zoxide_result="$(zoxide query -i -- "$@")" && _z_cd "$_zoxide_result"
+# Jump to a directory using interactive search.
+function __zoxide_zi() {
+    \builtin local result
+    result="$(\command zoxide query --interactive -- "$@")" && __zoxide_cd "${result}"
 }
 
+# =============================================================================
+#
+# Commands for zoxide. Disable these using --no-cmd.
+#
 
-alias za='zoxide add'
-
-alias zq='zoxide query'
-alias zqi='zoxide query -i'
-
-alias zr='zoxide remove'
-zri() {
-    _zoxide_result="$(zoxide query -i -- "$@")" && zoxide remove "$_zoxide_result"
+function z() {
+    __zoxide_z "$@"
 }
 
-
-_zoxide_hook() {
-    zoxide add "$(pwd -L)"
+function zi() {
+    __zoxide_zi "$@"
 }
 
-chpwd_functions=(${chpwd_functions[@]} "_zoxide_hook")
+# Completions.
+if [[ -o zle ]]; then
+    __zoxide_result=''
 
-###############################################################################################################
+    function __zoxide_z_complete() {
+        # Only show completions when the cursor is at the end of the line.
+        # shellcheck disable=SC2154
+        [[ "${#words[@]}" -eq "${CURRENT}" ]] || return 0
+
+        if [[ "${#words[@]}" -eq 2 ]]; then
+            # Show completions for local directories.
+            _files -/
+        elif [[ "${words[-1]}" == '' ]]; then
+            # Show completions for Space-Tab.
+            # shellcheck disable=SC2086
+            __zoxide_result="$(\command zoxide query --exclude "$(__zoxide_pwd || \builtin true)" --interactive -- ${words[2,-1]})" || __zoxide_result=''
+
+            # Bind '\e[0n' to helper function.
+            \builtin bindkey '\e[0n' '__zoxide_z_complete_helper'
+            # Send '\e[0n' to console input.
+            \builtin printf '\e[5n'
+        fi
+
+        # Report that the completion was successful, so that we don't fall back
+        # to another completion function.
+        return 0
+    }
+
+    function __zoxide_z_complete_helper() {
+        if [[ -n "${__zoxide_result}" ]]; then
+            # shellcheck disable=SC2034,SC2296
+            BUFFER="z ${(q-)__zoxide_result}"
+            \builtin zle reset-prompt
+            \builtin zle accept-line
+        else
+            \builtin zle reset-prompt
+        fi
+    }
+    \builtin zle -N __zoxide_z_complete_helper
+
+    [[ "${+functions[compdef]}" -ne 0 ]] && \compdef __zoxide_z_complete z
+fi
+
+# =============================================================================
+#
+# To initialize zoxide, add this to your configuration (usually ~/.zshrc):
+#
+# eval "$(zoxide init zsh)"
+
 
 
 stty stop undef         # Disable ctrl-s to freeze terminal.
@@ -119,12 +191,14 @@ alias lla='eza -alF --icons --color always --group-directories-first --git --git
 alias la='ls -A --color always --group-directories-first --git --git-repos'
 
 alias bat='batcat'
+alias tree='eza --tree --color=always'
 
 export EDITOR='vim'
 export VISUAL='vim'
 #set -o vi
 export KEYTIMEOUT=1
 
+alias cd=z
 
 # Define the userpart section of the prompt
 local userpart='%F{green}%n@%m%f:'
@@ -149,6 +223,7 @@ alias battery='cat /sys/class/power_supply/BAT0/capacity'
 alias monitor='xrandr --output DisplayPort-1 --mode 1920x1080 --rate 240'
 
 export PATH="$PATH:/opt/nvim/"
+
 source ~/.git-prompt.sh
-# Load zsh-syntax-highlighting; should be last.
-source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
